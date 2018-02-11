@@ -21,120 +21,58 @@ func TestNewServer(t *testing.T) {
 	errBudget := getErrorBudget(3, 2, time.Second)
 	srv := NewServer(errBudget)
 	if srv == nil {
-		t.Error("Failed to create a server")
+		t.Fatal("Failed to create a server")
 	}
 }
 
-func TestBoringWorkload(t *testing.T) {
+func TestErrorRateLimiting(t *testing.T) {
 	t.Parallel()
 
-	errBudget := getErrorBudget(3, 2, time.Second)
+	errorRate := 3
+	recoveryRate := 3 // same recovery rate as error rate for simplicity
+	timeWindow := 10 * time.Millisecond
 
+	errBudget := getErrorBudget(errorRate, recoveryRate, timeWindow)
 	srv := NewServer(errBudget)
 
-	// Specify "boring" workload - output 42 until cancelled
-	srv.Workload = func(arg interface{}, term <-chan interface{}) (<-chan interface{}, error) {
-		resChan := make(chan interface{})
-		go func() {
-			defer close(resChan)
-			for {
-				select {
-				case <-term:
-					return
-				case resChan <- 42:
+	rnd := rand.New(rand.NewSource(1337))
+	totalErrors := rnd.Intn(errorRate * 2)
+	errorCount := 0
+
+	failFunc := func() error { return errors.New("fail") }
+	passFunc := func() error { return nil }
+
+	totalTimeWindows := 10
+	windowCount := 0
+	ticker := time.NewTicker(timeWindow)
+	defer ticker.Stop()
+LOOP:
+	for {
+		select {
+		case <-ticker.C:
+			if windowCount == totalTimeWindows {
+				break LOOP
+			}
+			totalErrors = rnd.Intn(errorRate * 2)
+			errorCount = 0
+			windowCount++
+		default:
+			var err error
+			if errorCount < totalErrors {
+				// fail
+				err = srv.Run(failFunc)
+				errorCount++
+			} else {
+				// pass
+				err = srv.Run(passFunc)
+			}
+
+			if errorCount >= errorRate {
+				if err != ErrBudgetExceeded {
+					t.Errorf("Expected to get %v, but got - %v",
+						ErrBudgetExceeded, err)
 				}
 			}
-		}()
-		return resChan, nil
-	}
-
-	term := make(chan interface{})
-	defer close(term)
-	resChan, err := srv.Workload(nil, term)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	for i := 0; i < 1000; i++ {
-		res := <-resChan
-		intRes, _ := res.(int)
-		if intRes != 42 {
-			t.Errorf("Expected to get %d, got - %d", 42, intRes)
-		}
-	}
-}
-
-func TestInterestingWorkload(t *testing.T) {
-	t.Parallel()
-
-	errBudget := getErrorBudget(3, 2, 10*time.Millisecond)
-
-	srv := NewServer(errBudget)
-
-	// Specify "interesting" workload that will fail arbitrarily
-	// 0-10 times in a 10 millisecond window
-	srv.Workload = func(arg interface{}, term <-chan interface{}) (<-chan interface{}, error) {
-		resChan := make(chan interface{})
-		go func() {
-			defer close(resChan)
-			const maxErrors int = 10
-			windowTicker := time.NewTicker(10 * time.Millisecond)
-			rnd := rand.New(rand.NewSource(1337))
-			totalErrors := rnd.Intn(maxErrors)
-			errorsCounter := 0
-			defer windowTicker.Stop()
-			for {
-				select {
-				case <-term:
-					return
-				case <-windowTicker.C:
-					totalErrors = rnd.Intn(maxErrors)
-					errorsCounter = 0
-				default:
-					if errorsCounter < totalErrors {
-						coinflip := rnd.Intn(2)
-						if coinflip == 0 {
-							// throw an error
-							select {
-							case <-term:
-								return
-							case resChan <- errors.New("Boom"):
-							}
-							errorsCounter++
-						} else {
-							// normal "boring" computation
-							select {
-							case <-term:
-								return
-							case resChan <- 42:
-							}
-						}
-					} else {
-						// normal "boring" computation
-						select {
-						case <-term:
-							return
-						case resChan <- 42:
-						}
-					}
-				}
-			}
-		}()
-		return resChan, nil
-	}
-
-	term := make(chan interface{})
-	defer close(term)
-	resChan, err := srv.Workload(nil, term)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	for i := 0; i < 1000; i++ {
-		res := <-resChan
-		intRes, _ := res.(int)
-		if intRes != 42 {
-			t.Errorf("Expected to get %d, got - %d", 42, intRes)
 		}
 	}
 }

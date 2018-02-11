@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// ErrWorkload is the error returned by the Workload function
-// in case of failure
-var ErrWorkload = errors.New("workload function failed")
+// ErrBudgetExceeded is returned when the server exceeds its error budget
+var ErrBudgetExceeded = errors.New("error budget exceeded")
 
 // ErrorBudget contains error budget information for the Server
 type ErrorBudget struct {
@@ -23,11 +22,14 @@ type ErrorBudget struct {
 type Server struct {
 	// budget is the error budget assigned for the server
 	budget ErrorBudget
-	// Workload is a payload-function performed by the server
-	Workload func(interface{}, <-chan interface{}) (<-chan interface{}, error)
 }
 
 // NewServer makes a new Server
 func NewServer(budget ErrorBudget) *Server {
 	return &Server{budget: budget}
+}
+
+// Run executes the specified payload function
+func (srv *Server) Run(f func() error) error {
+	return f()
 }
